@@ -105,16 +105,28 @@ struct Worker {
     current_task: Option<Task>,
     /// Flag set by task_finished()
     current_task_finished: bool,
+    /// Reference to shared queue for spawning new tasks
+    shared: Arc<Mutex<SharedQueue>>,
 }
 
 impl Worker {
-    fn new() -> Self {
+    fn new(shared: Arc<Mutex<SharedQueue>>) -> Self {
         Worker {
             local_tasks: VecDeque::new(),
             scheduler_context: Context::default(),
             current_task: None,
             current_task_finished: false,
+            shared,
         }
+    }
+
+    /// Spawn a new task from within this worker
+    fn spawn<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let task = Task::new(f);
+        self.shared.lock().unwrap().pending.push_back(task);
     }
 
     unsafe fn switch_to_scheduler(&mut self) {
@@ -175,7 +187,7 @@ impl Runtime {
 }
 
 fn worker_loop(worker_id: usize, shared: Arc<Mutex<SharedQueue>>) {
-    let mut worker = Worker::new();
+    let mut worker = Worker::new(Arc::clone(&shared));
 
     // Register this worker in thread-local storage
     CURRENT_WORKER.with(|w| {
@@ -238,5 +250,23 @@ pub fn gosched() {
         unsafe {
             (*worker).switch_to_scheduler();
         }
+    }
+}
+
+/// Spawn a new green thread from within a running task
+///
+/// Panics if called outside of a task context.
+pub fn go<F>(f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let worker_ptr = CURRENT_WORKER.with(|w| *w.borrow());
+
+    if let Some(worker) = worker_ptr {
+        unsafe {
+            (*worker).spawn(f);
+        }
+    } else {
+        panic!("go() called outside of runtime context");
     }
 }

@@ -188,6 +188,15 @@ impl Runtime {
             context_switch(&mut task.context, &self.scheduler_context);
         }
     }
+
+    /// Spawn a new task (called from within a running task)
+    fn spawn<F>(&mut self, f: F)
+    where
+        F: FnOnce() + 'static,
+    {
+        let task = Task::new(f);
+        self.tasks.push_back(task);
+    }
 }
 
 impl Default for Runtime {
@@ -206,4 +215,22 @@ pub fn gosched() {
             }
         }
     });
+}
+
+/// Spawn a new green thread from within a running task
+///
+/// Panics if called outside of a task context.
+pub fn go<F>(f: F)
+where
+    F: FnOnce() + 'static,
+{
+    let runtime_ptr = RUNTIME.with(|rt| *rt.borrow());
+
+    if let Some(runtime) = runtime_ptr {
+        unsafe {
+            (*runtime).spawn(f);
+        }
+    } else {
+        panic!("go() called outside of runtime context");
+    }
 }
