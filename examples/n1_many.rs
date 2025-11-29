@@ -8,7 +8,7 @@ fn main() {
         start.elapsed().as_secs_f64()
     );
 
-    let runtime = Runtime::new();
+    let mut runtime = Runtime::new();
     let task_count = 100_000;
 
     for i in 0..task_count {

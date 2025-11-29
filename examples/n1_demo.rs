@@ -1,7 +1,7 @@
 use mygoroutine::n1::{Runtime, gosched};
 
 fn main() {
-    let runtime = Runtime::new();
+    let mut runtime = Runtime::new();
 
     runtime.go(|| {
         println!("Task 1: start");
