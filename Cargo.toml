@@ -1,0 +1,7 @@
+[package]
+name = "mygoroutine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+corosensei = "0.3.1"
