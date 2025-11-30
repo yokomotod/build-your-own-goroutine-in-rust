@@ -129,7 +129,9 @@ mod arch {
     /// Saved CPU context for context switching
     ///
     /// On aarch64 (AAPCS64), these are the callee-saved registers
-    /// that must be preserved across function calls.
+    /// that must be preserved across function calls:
+    /// - x19-x28: general purpose callee-saved registers
+    /// - d8-d15: floating-point/SIMD callee-saved registers (lower 64 bits of v8-v15)
     #[repr(C)]
     #[derive(Debug, Clone, Default)]
     pub struct Context {
@@ -150,6 +152,15 @@ mod arch {
         x26: u64,
         x27: u64,
         x28: u64,
+        /// Floating-point/SIMD (callee-saved, lower 64 bits)
+        d8: u64,
+        d9: u64,
+        d10: u64,
+        d11: u64,
+        d12: u64,
+        d13: u64,
+        d14: u64,
+        d15: u64,
     }
 
     impl Context {
@@ -212,6 +223,15 @@ mod arch {
             "str x26, [x0, #0x50]",
             "str x27, [x0, #0x58]",
             "str x28, [x0, #0x60]",
+            // Save floating-point callee-saved registers
+            "str d8,  [x0, #0x68]",
+            "str d9,  [x0, #0x70]",
+            "str d10, [x0, #0x78]",
+            "str d11, [x0, #0x80]",
+            "str d12, [x0, #0x88]",
+            "str d13, [x0, #0x90]",
+            "str d14, [x0, #0x98]",
+            "str d15, [x0, #0xa0]",
             // Load callee-saved registers from new context (x1)
             "ldr x9,  [x1, #0x00]", // sp
             "mov sp, x9",
@@ -227,6 +247,15 @@ mod arch {
             "ldr x26, [x1, #0x50]",
             "ldr x27, [x1, #0x58]",
             "ldr x28, [x1, #0x60]",
+            // Load floating-point callee-saved registers
+            "ldr d8,  [x1, #0x68]",
+            "ldr d9,  [x1, #0x70]",
+            "ldr d10, [x1, #0x78]",
+            "ldr d11, [x1, #0x80]",
+            "ldr d12, [x1, #0x88]",
+            "ldr d13, [x1, #0x90]",
+            "ldr d14, [x1, #0x98]",
+            "ldr d15, [x1, #0xa0]",
             // Return to the new context
             "ret",
         );
