@@ -31,7 +31,6 @@ struct Task {
     context: Context,
     #[allow(dead_code)]
     stack: Vec<u8>, // Keep stack alive
-    finished: bool,
 }
 
 // Task needs to be Send because it's moved between threads via the shared queue
@@ -56,11 +55,7 @@ impl Task {
 
         let context = Context::new_for_task(stack_top, task_entry::<F> as usize, f_ptr as u64);
 
-        Task {
-            context,
-            stack,
-            finished: false,
-        }
+        Task { context, stack }
     }
 }
 
@@ -97,8 +92,6 @@ thread_local! {
 
 /// Per-thread worker state
 struct Worker {
-    /// Local queue of tasks
-    local_tasks: VecDeque<Task>,
     /// Scheduler context for this worker
     scheduler_context: Context,
     /// Currently running task
@@ -112,7 +105,6 @@ struct Worker {
 impl Worker {
     fn new(shared: Arc<Mutex<SharedQueue>>) -> Self {
         Worker {
-            local_tasks: VecDeque::new(),
             scheduler_context: Context::default(),
             current_task: None,
             current_task_finished: false,
@@ -168,43 +160,35 @@ fn worker_loop(worker_id: usize, shared: Arc<Mutex<SharedQueue>>) {
     });
 
     loop {
-        // First, try to run local tasks
-        if let Some(task) = worker.local_tasks.pop_front() {
-            if task.finished {
-                continue;
-            }
+        // Get task from global shared queue
+        let task = {
+            let mut queue = shared.lock().unwrap();
 
-            worker.current_task = Some(task);
-            worker.current_task_finished = false;
-
-            let task_ctx = &worker.current_task.as_ref().unwrap().context as *const Context;
-            context_switch(&mut worker.scheduler_context, task_ctx);
-
-            if let Some(mut task) = worker.current_task.take() {
-                if worker.current_task_finished {
-                    task.finished = true;
-                } else {
-                    worker.local_tasks.push_back(task);
+            if let Some(task) = queue.pending.pop_front() {
+                task
+            } else {
+                if queue.shutdown {
+                    break;
                 }
+                queue.shutdown = true;
+                break;
             }
-            continue;
-        }
+        };
 
-        // No local tasks, try to get from shared queue
-        let mut queue = shared.lock().unwrap();
+        // Run the task
+        worker.current_task = Some(task);
+        worker.current_task_finished = false;
 
-        if let Some(task) = queue.pending.pop_front() {
-            drop(queue);
-            worker.local_tasks.push_back(task);
-            continue;
-        }
+        let task_ctx = &worker.current_task.as_ref().unwrap().context as *const Context;
+        context_switch(&mut worker.scheduler_context, task_ctx);
 
-        if queue.shutdown {
-            break;
-        }
-
-        queue.shutdown = true;
-        break;
+        // Task yielded or finished
+        if let Some(task) = worker.current_task.take()
+            && !worker.current_task_finished {
+                // Task yielded, put back to global queue
+                shared.lock().unwrap().pending.push_back(task);
+            }
+            // If finished, just drop it
     }
 
     // Cleanup
