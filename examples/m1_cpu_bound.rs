@@ -1,4 +1,4 @@
-use mygoroutine::n1::{go, start_runtime};
+use mygoroutine::m1::{go, start_runtime};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -15,7 +15,7 @@ fn main() {
     let work_size = 7_500_000_000u64;
     let num_tasks = 8;
 
-    println!("=== N:1 Runtime (single thread) ===");
+    println!("=== M:1 Runtime (single thread) ===");
     println!("Running {} tasks with work_size = {}", num_tasks, work_size);
     println!("Watch CPU usage with: htop or top");
     println!();
