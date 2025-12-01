@@ -19,28 +19,25 @@
 //! ```
 
 use crate::common::{Context, Task, context_switch, get_closure_ptr, prepare_stack};
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 
 thread_local! {
-    static CURRENT_WORKER: UnsafeCell<Worker> = UnsafeCell::new(Worker::new());
-}
-
-fn current_worker() -> *mut Worker {
-    CURRENT_WORKER.with(|w| w.get())
+    static CURRENT_WORKER: Worker = Worker::new();
 }
 
 /// Called when a task completes
 fn task_finished() {
-    unsafe {
-        let worker = current_worker();
-        (*worker)
+    CURRENT_WORKER.with(|worker| {
+        worker
             .current_task
+            .borrow_mut()
             .as_mut()
             .expect("task_finished called without current task")
             .finished = true;
-        (*worker).switch_to_scheduler();
-    }
+
+        worker.switch_to_scheduler();
+    });
 }
 
 /// Entry point for new tasks
@@ -62,57 +59,72 @@ where
 /// N:1 Green Thread Worker (internal)
 struct Worker {
     /// Queue of runnable tasks
-    tasks: VecDeque<Task>,
+    tasks: RefCell<VecDeque<Task>>,
     /// Context to return to when a task yields
-    context: Context,
+    context: UnsafeCell<Context>,
     /// Currently running task
-    current_task: Option<Task>,
+    current_task: RefCell<Option<Task>>,
 }
 
 impl Worker {
     fn new() -> Self {
         Worker {
-            tasks: VecDeque::new(),
-            context: Context::default(),
-            current_task: None,
+            tasks: RefCell::new(VecDeque::new()),
+            context: UnsafeCell::new(Context::default()),
+            current_task: RefCell::new(None),
         }
     }
 
-    unsafe fn switch_to_scheduler(&mut self) {
-        let task = self
-            .current_task
-            .as_mut()
-            .expect("switch_to_scheduler called without current task");
-        context_switch(&mut task.context, &self.context);
+    fn switch_to_scheduler(&self) {
+        // Get pointers before context_switch (to avoid holding RefCell borrow across switch)
+        let task_ctx: *mut Context = {
+            let mut task = self.current_task.borrow_mut();
+            &mut task
+                .as_mut()
+                .expect("switch_to_scheduler called without current task")
+                .context as *mut Context
+        }; // RefMut is dropped here
+
+        let worker_ctx: *const Context = self.context.get();
+
+        // Note: We use raw pointers because context_switch requires simultaneous
+        // access to two Contexts, which Rust's borrow checker cannot express.
+        context_switch(task_ctx, worker_ctx);
     }
 }
 
 fn worker_loop() {
-    unsafe {
-        let worker = current_worker();
-
+    CURRENT_WORKER.with(|worker| {
         loop {
-            // Get task from queue
-            let Some(task) = (*worker).tasks.pop_front() else {
+            // Get task from queue (borrow ends immediately)
+            let Some(task) = worker.tasks.borrow_mut().pop_front() else {
                 break;
             };
 
-            // Run the task
-            (*worker).current_task = Some(task);
+            // Set current task (borrow ends immediately)
+            *worker.current_task.borrow_mut() = Some(task);
 
-            let task_ctx = &(*worker).current_task.as_ref().unwrap().context;
-            context_switch(&mut (*worker).context, task_ctx);
+            // Get pointers before context_switch
+            let worker_ctx: *mut Context = worker.context.get();
+            let task_ctx: *const Context = {
+                let task = worker.current_task.borrow();
+                &task.as_ref().unwrap().context as *const Context
+            }; // Ref is dropped here
 
-            // Task yielded or finished
-            if let Some(task) = (*worker).current_task.take()
+            // Note: We use raw pointers because context_switch requires simultaneous
+            // access to two Contexts, which Rust's borrow checker cannot express.
+            context_switch(worker_ctx, task_ctx);
+
+            // Task yielded or finished (borrow ends immediately)
+            if let Some(task) = worker.current_task.borrow_mut().take()
                 && !task.finished
             {
                 // Task yielded, put back to queue
-                (*worker).tasks.push_back(task);
+                worker.tasks.borrow_mut().push_back(task);
             }
             // If finished, just drop it
         }
-    }
+    });
 }
 
 /// Spawn a new green thread
@@ -128,17 +140,16 @@ where
     let context = Context::new(stack_top, task_entry::<F> as usize, f_ptr);
     let task = Task::new(context, stack);
 
-    unsafe {
-        let worker = current_worker();
-        (*worker).tasks.push_back(task);
-    }
+    CURRENT_WORKER.with(|worker| {
+        worker.tasks.borrow_mut().push_back(task);
+    });
 }
 
 /// Yield execution to another green thread
 pub fn gosched() {
-    unsafe {
-        (*current_worker()).switch_to_scheduler();
-    }
+    CURRENT_WORKER.with(|worker| {
+        worker.switch_to_scheduler();
+    });
 }
 
 /// Start the runtime and run until all tasks complete
